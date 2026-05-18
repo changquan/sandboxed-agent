@@ -1,13 +1,16 @@
 from collections import deque
 
 import chainlit as cl
-from agents import Agent, Runner, function_tool
+from agents import Runner, function_tool
+from agents.run import RunConfig
+from agents.sandbox import SandboxAgent, SandboxRunConfig
+from agents.sandbox.capabilities import Shell
 from openai.types.responses import ResponseTextDeltaEvent
 
+from src.sandbox import get_sandbox_session
 from src.tools.weather import get_weather as _get_weather
 from src.tools.calculator import calculate as _calculate
 from src.tools.search import web_search as _web_search
-from src.tools.code_interpreter import run_code as _run_code
 
 
 @function_tool
@@ -28,21 +31,16 @@ async def web_search(query: str) -> str:
     return await _web_search(query)
 
 
-@function_tool
-async def run_code(code: str, language: str = "python") -> str:
-    """Execute code in a secure isolated sandbox. State (variables, imports, files) persists across calls in the same conversation."""
-    return await _run_code(code, language)
-
-
-AGENT = Agent(
+AGENT = SandboxAgent(
     name="AI Assistant",
     model="gpt-4o-mini",
     instructions=(
-        "You are a helpful assistant with access to tools including a Python code interpreter. "
-        "Use run_code for data analysis, calculations, or anything that benefits from real code. "
-        "State (variables, imports, files) persists across run_code calls within the same conversation."
+        "You are a helpful assistant with shell access to a secure e2b sandbox. "
+        "Use exec_command to run Python scripts or shell commands for code execution, data analysis, or calculations. "
+        "You also have get_weather, calculate, and web_search tools."
     ),
-    tools=[get_weather, calculate, web_search, run_code],
+    tools=[get_weather, calculate, web_search],
+    capabilities=[Shell()],
 )
 
 
@@ -51,7 +49,12 @@ async def run_agent(input_list: list) -> list:
     msg = cl.Message(content="")
     await msg.send()
 
-    result = Runner.run_streamed(AGENT, input=input_list)
+    session = get_sandbox_session()
+    run_config = RunConfig(
+        sandbox=SandboxRunConfig(session=session) if session else None
+    )
+
+    result = Runner.run_streamed(AGENT, input=input_list, run_config=run_config)
     active_steps: deque[cl.Step] = deque()
 
     async for event in result.stream_events():

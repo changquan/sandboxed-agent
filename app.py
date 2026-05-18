@@ -15,7 +15,8 @@ async def on_chat_start():
     await cl.Message(
         content=(
             "Hello! I'm your AI agent. I have access to these tools:\n\n"
-            "- **run_code** — execute Python or shell in an isolated sandbox (state persists per conversation)\n"
+            "- **shell** — execute Python or shell commands in a secure e2b sandbox (state persists per conversation)\n"
+            "- **filesystem** — read and write files in the sandbox\n"
             "- **get_weather** — current weather for any city\n"
             "- **calculate** — evaluate math expressions\n"
             "- **web_search** — search the web\n\n"
