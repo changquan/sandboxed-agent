@@ -138,14 +138,14 @@ History is stored in `cl.user_session` and persists for the duration of the sess
 |---|---|---|---|---|
 | `get_weather` | Current weather for a city | HTTP GET `wttr.in` | `city: str` | `"City: desc, temp°C (feels like X°C)"` |
 | `calculate` | Evaluate a math expression | In-process `eval` | `expression: str` | Result string or error message |
-| `web_search` | Search the web | HTTP GET DuckDuckGo proxy | `query: str` | Up to 3 results as `"- title: url"` lines |
+| `web_search` | Search the web | HTTP POST Tavily API | `query: str` | Up to 3 results as `"- title: url\n  snippet"` lines |
 | `run_code` | Execute Python or shell | e2b cloud sandbox (async) | `code: str`, `language: "python"\|"shell"` | Combined stdout + stderr + result + error |
 
 **Notes:**
 
 - `calculate` uses a character allowlist (`0-9 + - * / ( ) . , ** %`) and strips `__builtins__` — it cannot execute arbitrary code.
 - `run_code` sandbox state (variables, imports, installed packages, written files) persists across all calls within the same session; a new session gets a fresh sandbox.
-- `web_search` depends on a third-party DuckDuckGo proxy (`ddg-api.herokuapp.com`) — availability is not guaranteed.
+- `web_search` uses the Tavily Search API (`api.tavily.com`). If `TAVILY_API_KEY` is not set, the tool returns a graceful error string. Free tier: 1,000 searches/month.
 - All tools return plain strings back to the agent; error conditions are returned as human-readable strings rather than raised exceptions.
 
 ---
@@ -158,6 +158,7 @@ History is stored in `cl.user_session` and persists for the duration of the sess
 |---|---|---|
 | `OPENAI_API_KEY` | Yes | Authenticates requests to the OpenAI API |
 | `E2B_API_KEY` | No | Enables the e2b code interpreter sandbox. If absent, `run_code` is disabled and a warning is shown at session start |
+| `TAVILY_API_KEY` | No | Enables the `web_search` tool via Tavily API. If absent, search returns a graceful error. Get a key at tavily.com (free tier: 1,000 searches/month) |
 
 **Dependencies** (`requirements.txt`):
 
