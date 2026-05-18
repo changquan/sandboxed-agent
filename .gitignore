@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 .files/
 .claude/
+.chainlit/translations/
