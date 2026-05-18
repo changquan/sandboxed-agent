@@ -1,86 +1,76 @@
-import json
+from collections import deque
 
 import chainlit as cl
-from openai import AsyncOpenAI
+from agents import Agent, Runner, function_tool
+from openai.types.responses import ResponseTextDeltaEvent
 
-from src.tools import TOOLS, run_tool
+from src.tools.weather import get_weather as _get_weather
+from src.tools.calculator import calculate as _calculate
+from src.tools.search import web_search as _web_search
+from src.tools.code_interpreter import run_code as _run_code
 
-client = AsyncOpenAI()
 
-SYSTEM = (
-    "You are a helpful assistant with access to tools including a Python code interpreter. "
-    "Use run_code for data analysis, calculations, plotting, or anything that benefits from "
-    "running real code. State (variables, imports, files) persists across run_code calls "
-    "within the same conversation."
+@function_tool
+async def get_weather(city: str) -> str:
+    """Get the current weather for a city."""
+    return await _get_weather(city)
+
+
+@function_tool
+def calculate(expression: str) -> str:
+    """Evaluate a mathematical expression and return the result."""
+    return _calculate(expression)
+
+
+@function_tool
+async def web_search(query: str) -> str:
+    """Search the web for up-to-date information on a topic."""
+    return await _web_search(query)
+
+
+@function_tool
+async def run_code(code: str, language: str = "python") -> str:
+    """Execute code in a secure isolated sandbox. State (variables, imports, files) persists across calls in the same conversation."""
+    return await _run_code(code, language)
+
+
+AGENT = Agent(
+    name="AI Assistant",
+    model="gpt-4o-mini",
+    instructions=(
+        "You are a helpful assistant with access to tools including a Python code interpreter. "
+        "Use run_code for data analysis, calculations, or anything that benefits from real code. "
+        "State (variables, imports, files) persists across run_code calls within the same conversation."
+    ),
+    tools=[get_weather, calculate, web_search, run_code],
 )
 
 
-async def run_agent(history: list) -> None:
-    """Stream one full agentic turn (may involve multiple tool calls), mutating history in place."""
+async def run_agent(input_list: list) -> list:
+    """Stream one agentic turn and return the updated input list."""
     msg = cl.Message(content="")
     await msg.send()
 
-    while True:
-        response = await client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": SYSTEM}, *history],
-            tools=TOOLS,
-            tool_choice="auto",
-            stream=True,
-        )
+    result = Runner.run_streamed(AGENT, input=input_list)
+    active_steps: deque[cl.Step] = deque()
 
-        tool_calls_acc: dict[int, dict] = {}
-        full_text = ""
-        finish_reason = "stop"
+    async for event in result.stream_events():
+        if event.type == "raw_response_event":
+            if isinstance(event.data, ResponseTextDeltaEvent):
+                await msg.stream_token(event.data.delta)
 
-        async for chunk in response:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            delta = choice.delta
-            if delta.content:
-                full_text += delta.content
-                await msg.stream_token(delta.content)
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    idx = tc.index
-                    if idx not in tool_calls_acc:
-                        tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
-                    if tc.id:
-                        tool_calls_acc[idx]["id"] += tc.id
-                    if tc.function:
-                        if tc.function.name:
-                            tool_calls_acc[idx]["name"] += tc.function.name
-                        if tc.function.arguments:
-                            tool_calls_acc[idx]["arguments"] += tc.function.arguments
+        elif event.type == "run_item_stream_event":
+            if event.name == "tool_called":
+                step = cl.Step(name=event.item.raw_item.name, type="tool")
+                step.input = event.item.raw_item.arguments
+                await step.send()
+                active_steps.append(step)
 
-        if finish_reason == "tool_calls" and tool_calls_acc:
-            tool_calls_list = [
-                {
-                    "id": t["id"],
-                    "type": "function",
-                    "function": {"name": t["name"], "arguments": t["arguments"]},
-                }
-                for t in tool_calls_acc.values()
-            ]
-            history.append({"role": "assistant", "tool_calls": tool_calls_list})
+            elif event.name == "tool_output":
+                if active_steps:
+                    step = active_steps.popleft()
+                    step.output = str(event.item.output)
+                    await step.update()
 
-            for tc in tool_calls_list:
-                name = tc["function"]["name"]
-                args = json.loads(tc["function"]["arguments"])
-                async with cl.Step(name=name, type="tool") as step:
-                    step.input = json.dumps(args, indent=2)
-                    result = await run_tool(name, args)
-                    step.output = result
-                history.append(
-                    {"role": "tool", "tool_call_id": tc["id"], "content": result}
-                )
-
-            msg = cl.Message(content="")
-            await msg.send()
-        else:
-            history.append({"role": "assistant", "content": full_text})
-            await msg.update()
-            break
+    await msg.update()
+    return result.to_input_list()

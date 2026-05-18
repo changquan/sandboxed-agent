@@ -10,7 +10,7 @@ from src.sandbox import create_sandbox, destroy_sandbox
 
 @cl.on_chat_start
 async def on_chat_start():
-    cl.user_session.set("history", [])
+    cl.user_session.set("input_list", [])
     await create_sandbox()
     await cl.Message(
         content=(
@@ -31,10 +31,10 @@ async def on_chat_end():
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    history: list = cl.user_session.get("history")
-    history.append({"role": "user", "content": message.content})
+    input_list: list = cl.user_session.get("input_list")
+    input_list = input_list + [{"role": "user", "content": message.content}]
     try:
-        await run_agent(history)
+        input_list = await run_agent(input_list)
     except Exception as e:
         await cl.Message(content=f"Error: {e}").send()
-    cl.user_session.set("history", history)
+    cl.user_session.set("input_list", input_list)
