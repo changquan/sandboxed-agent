@@ -3,5 +3,7 @@
 __pycache__/
 *.pyc
 .files/
-.claude/
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
 .chainlit/translations/
