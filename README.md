@@ -1,26 +1,25 @@
-# AI Agent — Chainlit + OpenAI
+# AI Agent — Chainlit + OpenAI Agents SDK
 
-A conversational AI agent with a **code interpreter** and tool use, built with Chainlit and the OpenAI API. Deployable to Fly.io via GitHub Actions.
+A conversational AI agent with sandboxed code execution and tool use, built with Chainlit and the OpenAI Agents SDK. Deployable to Fly.io via GitHub Actions.
 
 ## Tools
 
 | Tool | What it does |
 |---|---|
-| `run_code` | Executes Python or shell in an isolated e2b sandbox — state persists per conversation |
+| `exec_command` | Runs shell commands (including Python) in an isolated e2b sandbox — state persists per conversation |
 | `get_weather` | Live weather for any city via wttr.in |
 | `calculate` | Evaluates safe math expressions |
-| `web_search` | Searches the web via DuckDuckGo |
+| `web_search` | Searches the web via Tavily API |
 
 ## Project structure
 
 ```
 ├── app.py                    # Chainlit hooks (thin glue layer)
 ├── src/
-│   ├── agent.py              # Streaming agentic loop
-│   ├── sandbox.py            # e2b sandbox lifecycle
+│   ├── agent.py              # SandboxAgent + streaming event loop
+│   ├── sandbox.py            # e2b session lifecycle (E2BSandboxClient)
 │   └── tools/
-│       ├── __init__.py       # Tool registry + dispatcher
-│       ├── code_interpreter.py
+│       ├── __init__.py
 │       ├── weather.py
 │       ├── calculator.py
 │       └── search.py
@@ -45,6 +44,7 @@ cp .env.example .env
 # Edit .env and add your keys:
 #   OPENAI_API_KEY=sk-...
 #   E2B_API_KEY=e2b_...
+#   TAVILY_API_KEY=tvly-...
 
 # 4. Run
 chainlit run app.py
@@ -54,72 +54,16 @@ Open http://localhost:8000 in your browser.
 
 **Get your keys:**
 - OpenAI: https://platform.openai.com/api-keys
-- e2b (code interpreter sandbox): https://e2b.dev/dashboard → API Keys (free: 100h/month)
-
-## Deploy to Fly.io via GitHub
-
-Fly.io builds from the `Dockerfile` and deploys on every push to `master`.
-
-### One-time setup
-
-**1. Install Fly CLI and create the app**
-
-```powershell
-iwr https://fly.io/install.ps1 -useb | iex
-fly auth login
-```
-
-```bash
-# Edit fly.toml and set a unique app name, then:
-fly apps create <your-app-name>
-```
-
-**2. Set secrets on Fly.io**
-
-```bash
-fly secrets set OPENAI_API_KEY=sk-... E2B_API_KEY=e2b_...
-```
-
-**3. Add `FLY_API_TOKEN` to GitHub**
-
-```bash
-fly tokens create deploy -x 999999h
-```
-
-Copy the token, then go to:
-**GitHub repo → Settings → Secrets and variables → Actions → New repository secret**
-
-Name: `FLY_API_TOKEN`, Value: *(paste token)*
-
-**4. Push to deploy**
-
-```bash
-git push origin master
-```
-
-GitHub Actions runs `.github/workflows/deploy.yml` → builds the Docker image on Fly's infrastructure → deploys. Check progress at:
-
-```bash
-fly logs
-fly status
-```
-
-Your app will be live at `https://<your-app-name>.fly.dev`.
-
-### Manual deploy (without GitHub Actions)
-
-```bash
-fly deploy
-```
+- e2b (code sandbox): https://e2b.dev/dashboard → API Keys (free: 100h/month)
+- Tavily (web search): https://tavily.com → free tier: 1,000 searches/month
 
 ## How it works
 
 1. User sends a message → Chainlit `on_message` fires
-2. `src/agent.py` calls `gpt-4o-mini` with all tool schemas, streaming the response
-3. If the model returns `tool_calls`, each tool runs and the result is appended to history
-4. The loop repeats until the model gives a plain text reply
-5. `run_code` calls forward to an **e2b microVM sandbox** — fully isolated, no host access
-6. Each tool call is shown as a collapsible Step in the UI
+2. `src/agent.py` runs `Runner.run_streamed()` from the OpenAI Agents SDK, streaming events
+3. The agent (`SandboxAgent`) decides which tools to call; each call appears as a collapsible Step in the UI
+4. Shell commands run inside a live **e2b microVM** via `exec_command` — the sandbox is created once per chat session and keeps state (files, installed packages, running processes) across turns
+5. The loop continues until the agent produces a final text reply
 
 ## Costs
 
@@ -128,3 +72,4 @@ fly deploy
 | Fly.io | ~$0 with auto-stop (machine sleeps when idle) | ~$0.0002/sec active |
 | e2b | 100 sandbox-hours/month | $0.16/hour |
 | OpenAI | Pay-per-use | gpt-4o-mini is ~$0.15/1M tokens |
+| Tavily | 1,000 searches/month | pay-per-use above |

@@ -1,18 +1,20 @@
 # ai-agent-sandbox — Developer Reference
 
-_Date: 2026-05-18_
+_Date: 2026-05-18 (last updated: 2026-05-19)_
 
 ---
 
 ## 1. Overview
 
-**ai-agent-sandbox** is a web-based AI chat application that lets users converse with a tool-using OpenAI agent through a Chainlit UI. The agent can execute real Python/shell code in an isolated cloud sandbox, look up live weather, evaluate math, and search the web.
+**ai-agent-sandbox** is a web-based AI chat application that lets users converse with a tool-using OpenAI agent through a Chainlit UI. The agent runs inside an **e2b cloud sandbox** and can execute real shell/Python commands, look up live weather, evaluate math, and search the web.
 
 | Property | Value |
 |---|---|
 | Interface | Chainlit web UI (chat) |
+| Agent framework | OpenAI Agents SDK (`openai-agents`) |
 | LLM | OpenAI `gpt-4o-mini` (streaming) |
-| Code execution | e2b cloud sandbox (per-session, persistent state) |
+| Agent type | `SandboxAgent` with `Shell` capability |
+| Code execution | e2b cloud sandbox via `E2BSandboxClient` (per-session, persistent state) |
 | Conversation memory | In-process per session (`cl.user_session`) |
 | Entry point | `app.py` |
 | Runtime | Python 3.11, async (`asyncio`) |
@@ -34,37 +36,35 @@ The system is intentionally a sandbox / learning project — no database, no aut
 └──────────────────────┬──────────────────────────────┘
                        │  calls
 ┌──────────────────────▼──────────────────────────────┐
-│               src/agent.py  (run_agent)             │
-│  • Maintains conversation history (list of dicts)   │
-│  • Streams from OpenAI API                          │
-│  • Handles tool_calls loop until finish=stop        │
+│          src/agent.py  (run_agent)                  │
+│  • SandboxAgent + Shell capability                  │
+│  • Runner.run_streamed() with RunConfig(sandbox=…)  │
+│  • Streams raw_response + run_item events           │
 └────┬──────────────────────────┬──────────────────────┘
-     │ OpenAI API (streaming)   │ dispatches to
-     │                   ┌──────▼────────────────────┐
-     │                   │   src/tools/__init__.py   │
-     │                   │      run_tool(name, args) │
-     │                   └──┬──────┬──────┬──────┬───┘
-     │                      │      │      │      │
-     │               weather│  calc│search│  code│
-     │                   .py│   .py│   .py│ _interp.py
-     │                      │      │      │      │
-     │                      │      │      │  ┌───▼──────────────┐
-     │                      │      │      │  │  src/sandbox.py  │
-     │                      │      │      │  │  e2b AsyncSandbox│
-     │                      │      │      │  │  (per session)   │
-     │                      │      │      │  └──────────────────┘
-     ▼
- OpenAI API
- (gpt-4o-mini)
+     │ OpenAI Responses API     │ @function_tool calls
+     │ (streaming)              │
+     ▼                   ┌──────▼──────────────────────┐
+ OpenAI API              │        src/tools/           │
+ (gpt-4o-mini)           │  weather.py  calculator.py  │
+                         │  search.py                  │
+                         └─────────────────────────────┘
+
+  exec_command (Shell capability) ──► src/sandbox.py
+                                          │
+                                    E2BSandboxClient
+                                          │
+                                   e2b cloud sandbox
+                                   (per session, stateful)
 ```
 
 **Key architectural decisions:**
 
 - `app.py` owns only Chainlit lifecycle hooks — no business logic.
-- `agent.py` is the single agentic loop; all tool dispatch goes through `run_tool`.
-- Each tool module exports a schema dict + async/sync function — uniform interface.
-- The e2b sandbox is created once per chat session and lives in `cl.user_session`; state (variables, files) persists across all `run_code` calls in that session.
+- `agent.py` uses the OpenAI Agents SDK's `SandboxAgent` + `Runner.run_streamed()`. Tool dispatch and the multi-turn loop are handled by the SDK; `run_agent` just processes streaming events.
+- `SandboxAgent` is configured with `capabilities=[Shell()]` only. The `Filesystem` capability is excluded because it adds `SandboxApplyPatchTool` (type `"custom"`), which `gpt-4o-mini` rejects. The `Shell` capability adds `ExecCommandTool` (type `"function"`), which works with all standard OpenAI models.
+- The e2b sandbox session is created once per chat session and lives in `cl.user_session`. All `exec_command` calls in a session share the same sandbox — files, environment, and installed packages persist across turns.
 - No global state — concurrent sessions are fully isolated via `cl.user_session`.
+- Conversation history is stored as the Agents SDK's `input_list` format (list of response items) and passed back to `Runner.run_streamed()` each turn via `result.to_input_list()`.
 
 ---
 
@@ -72,14 +72,13 @@ The system is intentionally a sandbox / learning project — no database, no aut
 
 | File | Responsibility |
 |---|---|
-| `app.py` | Chainlit entry point. Registers `on_chat_start`, `on_chat_end`, `on_message` hooks. Initializes/destroys sandbox and delegates all agent logic. |
-| `src/agent.py` | Agentic loop. Streams OpenAI completions, accumulates streaming tool call chunks, dispatches tool calls, appends results to history, loops until `finish_reason == "stop"`. |
-| `src/sandbox.py` | e2b sandbox lifecycle. `create_sandbox()` / `destroy_sandbox()` called at session start/end. `get_sandbox()` returns the active sandbox for the current session or `None`. Gracefully degrades when `E2B_API_KEY` is absent. |
-| `src/tools/__init__.py` | Tool registry. Exports `TOOLS` (list of all OpenAI function schemas) and `run_tool(name, args)` dispatcher. |
+| `app.py` | Chainlit entry point. Registers `on_chat_start`, `on_chat_end`, `on_message` hooks. Creates/destroys e2b sandbox session and delegates all agent logic to `run_agent`. |
+| `src/agent.py` | Defines `SandboxAgent` with `Shell` capability and `@function_tool` wrappers. `run_agent()` calls `Runner.run_streamed()` with `RunConfig(sandbox=SandboxRunConfig(session=...))`, then processes streaming events to update the Chainlit UI. |
+| `src/sandbox.py` | e2b session lifecycle. `create_sandbox()` uses `E2BSandboxClient` to create an `E2BSandboxType.E2B` session (600s timeout, pause on exit). `get_sandbox_session()` returns the active session for the current chat. Gracefully degrades if creation fails. |
 | `src/tools/weather.py` | `get_weather(city)` — fetches from `wttr.in` JSON API via `httpx`. |
 | `src/tools/calculator.py` | `calculate(expression)` — evaluates Python math expressions with a character allowlist. No `__builtins__` to prevent arbitrary execution. |
-| `src/tools/search.py` | `web_search(query)` — queries a DuckDuckGo proxy API, returns top 3 results as title + link. |
-| `src/tools/code_interpreter.py` | `run_code(code, language)` — runs Python or shell in the e2b sandbox. Returns combined stdout, stderr, result text, and error info. |
+| `src/tools/search.py` | `web_search(query)` — POSTs to Tavily Search API, returns top results as title + URL + snippet. |
+| `src/tools/__init__.py` | Re-exports the three `@function_tool`-wrapped tool functions. |
 
 ---
 
@@ -92,61 +91,69 @@ User sends message
   │
   ▼
 on_message(message)
-  │  appends {"role": "user", "content": ...} to history
+  │  appends {"role": "user", "content": ...} to input_list
   ▼
-run_agent(history)  ◄────────────────────────────┐
-  │                                               │
-  │  POST /chat/completions (stream=True)         │
-  │  messages = [system_prompt] + history         │
-  ▼                                               │
-Stream chunks                                     │
-  ├─ delta.content  → stream tokens to UI         │
-  └─ delta.tool_calls → accumulate into dict      │
-  │                                               │
-  ▼                                               │
-finish_reason == "tool_calls"?                    │
-  ├─ NO  → append assistant message, break        │
-  └─ YES → append assistant + tool_calls to history
-           │                                      │
-           ▼                                      │
-        run_tool(name, args) for each call        │
-           │  result string returned              │
-           ▼                                      │
-        append {"role": "tool", ...} to history   │
-        open new cl.Message, loop ──────────────►─┘
+run_agent(input_list)
+  │
+  │  Runner.run_streamed(AGENT, input=input_list,
+  │                      run_config=RunConfig(sandbox=SandboxRunConfig(session=…)))
+  ▼
+Stream events
+  ├─ raw_response_event (ResponseTextDeltaEvent)
+  │    → stream token to Chainlit message
+  └─ run_item_stream_event
+       ├─ "tool_called"  → open cl.Step, record name + args
+       └─ "tool_output"  → close cl.Step with result
+  │
+  ▼
+result.to_input_list()  →  returned as new input_list
+  │
+  ▼
+cl.user_session.set("input_list", input_list)
 ```
 
-**History format** (OpenAI messages list, mutated in place across the loop):
+**exec_command flow (Shell tool):**
+
+```
+Agent decides to call exec_command(cmd="python3 script.py")
+  │
+  ▼
+Shell capability routes call to ExecCommandTool._invoke()
+  │
+  ▼
+session.exec(cmd, shell=True)  →  runs inside e2b sandbox
+  │
+  ▼
+Returns stdout + stderr + exit code as string to agent
+```
+
+**input_list format** (OpenAI Agents SDK response items, passed between turns):
 
 ```python
 [
-  {"role": "system",    "content": "..."},          # prepended each request, not stored
   {"role": "user",      "content": "user text"},
-  {"role": "assistant", "tool_calls": [...]},        # when tools were called
-  {"role": "tool",      "tool_call_id": "...", "content": "tool result"},
-  {"role": "assistant", "content": "final reply"},
+  # assistant response items (text, tool calls) added by SDK
+  # tool output items added by SDK after each tool execution
 ]
 ```
-
-History is stored in `cl.user_session` and persists for the duration of the session only — it is lost when the browser tab closes.
 
 ---
 
 ## 5. Tool Inventory
 
-| Tool | Function | Transport | Input | Output |
+| Tool | Source | Transport | Input | Output |
 |---|---|---|---|---|
-| `get_weather` | Current weather for a city | HTTP GET `wttr.in` | `city: str` | `"City: desc, temp°C (feels like X°C)"` |
-| `calculate` | Evaluate a math expression | In-process `eval` | `expression: str` | Result string or error message |
-| `web_search` | Search the web | HTTP POST Tavily API | `query: str` | Up to 3 results as `"- title: url\n  snippet"` lines |
-| `run_code` | Execute Python or shell | e2b cloud sandbox (async) | `code: str`, `language: "python"\|"shell"` | Combined stdout + stderr + result + error |
+| `exec_command` | Shell capability (SandboxAgent) | e2b sandbox `session.exec()` | `cmd: str` | stdout + stderr + exit code |
+| `get_weather` | `@function_tool` | HTTP GET `wttr.in` | `city: str` | `"City: desc, temp°C (feels like X°C)"` |
+| `calculate` | `@function_tool` | In-process `eval` | `expression: str` | Result string or error message |
+| `web_search` | `@function_tool` | HTTP POST Tavily API | `query: str` | Top results as title + URL + snippet |
 
 **Notes:**
 
+- `exec_command` runs in the e2b sandbox. The agent can run `python3 -c "..."`, `pip install ...`, write files, and chain commands across turns — the sandbox stays alive for the session.
 - `calculate` uses a character allowlist (`0-9 + - * / ( ) . , ** %`) and strips `__builtins__` — it cannot execute arbitrary code.
-- `run_code` sandbox state (variables, imports, installed packages, written files) persists across all calls within the same session; a new session gets a fresh sandbox.
-- `web_search` uses the Tavily Search API (`api.tavily.com`). If `TAVILY_API_KEY` is not set, the tool returns a graceful error string. Free tier: 1,000 searches/month.
-- All tools return plain strings back to the agent; error conditions are returned as human-readable strings rather than raised exceptions.
+- `web_search` uses the Tavily Search API. If `TAVILY_API_KEY` is not set, the tool returns a graceful error string. Free tier: 1,000 searches/month.
+- All `@function_tool` tools return plain strings; error conditions are returned as human-readable strings rather than raised exceptions.
 
 ---
 
@@ -157,7 +164,7 @@ History is stored in `cl.user_session` and persists for the duration of the sess
 | Variable | Required | Purpose |
 |---|---|---|
 | `OPENAI_API_KEY` | Yes | Authenticates requests to the OpenAI API |
-| `E2B_API_KEY` | No | Enables the e2b code interpreter sandbox. If absent, `run_code` is disabled and a warning is shown at session start |
+| `E2B_API_KEY` | Yes | Authenticates the `E2BSandboxClient`. If absent, sandbox creation fails and a warning is shown; other tools still work. |
 | `TAVILY_API_KEY` | No | Enables the `web_search` tool via Tavily API. If absent, search returns a graceful error. Get a key at tavily.com (free tier: 1,000 searches/month) |
 
 **Dependencies** (`requirements.txt`):
@@ -165,17 +172,15 @@ History is stored in `cl.user_session` and persists for the duration of the sess
 | Package | Version | Role |
 |---|---|---|
 | `chainlit` | `>=2.0.0` | Web UI + WebSocket server + session management |
-| `openai` | `>=1.30.0,<2.0.0` | OpenAI async client (pinned below v2 — breaking streaming API changes in v2) |
+| `openai-agents[e2b]` | `>=0.17.0` | OpenAI Agents SDK + e2b extension (`E2BSandboxClient`, `SandboxAgent`) |
 | `httpx` | `>=0.27.0` | Async HTTP client for weather and search tools |
 | `python-dotenv` | `>=1.0.0` | Loads `.env` at startup |
-| `e2b-code-interpreter` | `>=1.0.0` | e2b async sandbox for code execution |
 
 **Running the app:**
 
 ```powershell
-.venv\Scripts\chainlit.exe run app.py
-# or
-.\run.ps1
+chainlit run app.py
 ```
 
-**Sandbox timeout:** The e2b sandbox is configured with a 600-second (10-minute) server-side timeout. If the browser tab closes without triggering `on_chat_end`, the sandbox auto-expires.
+**Sandbox timeout:** The e2b sandbox is created with a 600-second server-side timeout and `pause_on_exit=True`. If the browser tab closes without triggering `on_chat_end`, the sandbox pauses rather than immediately billing; it resumes if the session reconnects, or expires after the timeout.
+
