@@ -2,8 +2,6 @@ import os
 
 import httpx
 
-TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
-
 SEARCH_SCHEMA = {
     "type": "function",
     "function": {
@@ -24,13 +22,14 @@ SEARCH_SCHEMA = {
 
 
 async def web_search(query: str) -> str:
-    if not TAVILY_API_KEY:
+    api_key = os.environ.get("TAVILY_API_KEY")
+    if not api_key:
         return "Web search unavailable: TAVILY_API_KEY is not set."
     try:
         async with httpx.AsyncClient(timeout=10) as http:
             resp = await http.post(
                 "https://api.tavily.com/search",
-                json={"api_key": TAVILY_API_KEY, "query": query, "max_results": 3},
+                json={"api_key": api_key, "query": query, "max_results": 3},
             )
             resp.raise_for_status()
             data = resp.json()
