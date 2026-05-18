@@ -1,0 +1,11 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.claude/
+run.ps1
+run.bat
+*.md
+!chainlit.md
