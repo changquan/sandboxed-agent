@@ -1,6 +1,6 @@
 # AI Agent — Chainlit + OpenAI Agents SDK
 
-A conversational AI agent with sandboxed code execution and tool use, built with Chainlit and the OpenAI Agents SDK. Deployable to Fly.io via GitHub Actions.
+A conversational AI agent with sandboxed code execution and tool use, built with Chainlit and the OpenAI Agents SDK.
 
 ## Tools
 
@@ -23,9 +23,6 @@ A conversational AI agent with sandboxed code execution and tool use, built with
 │       ├── weather.py
 │       ├── calculator.py
 │       └── search.py
-├── Dockerfile
-├── fly.toml
-└── .github/workflows/deploy.yml
 ```
 
 ## Local setup
@@ -69,7 +66,6 @@ Open http://localhost:8000 in your browser.
 
 | Service | Free tier | Overage |
 |---|---|---|
-| Fly.io | ~$0 with auto-stop (machine sleeps when idle) | ~$0.0002/sec active |
 | e2b | 100 sandbox-hours/month | $0.16/hour |
 | OpenAI | Pay-per-use | gpt-4o-mini is ~$0.15/1M tokens |
 | Tavily | 1,000 searches/month | pay-per-use above |
