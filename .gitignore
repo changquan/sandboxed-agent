@@ -6,5 +6,6 @@ __pycache__/
 .claude/*
 !.claude/settings.json
 !.claude/hooks/
+!.claude/skills/
 .chainlit/translations/
 .superpowers/
