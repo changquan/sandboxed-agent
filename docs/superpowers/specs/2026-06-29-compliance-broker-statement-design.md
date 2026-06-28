@@ -35,7 +35,7 @@ requirements.txt           # Add pdfplumber
 ### Tools
 
 **`register_compliance_file(file_path, role)`**
-- `role`: `"broker_statement"` or `"preclearance"`
+- `role`: `"broker_statement"`, `"preclearance"`, or `"index_reference"` (optional — JSON list of exempt instruments with constituent count and max weight)
 - Uploads the file from Chainlit's temp path into the E2B sandbox
 - Detects file type and runs the appropriate parser (see Parsing section)
 - Saves normalized JSON output to the sandbox
@@ -116,8 +116,9 @@ This script is fixed — it never changes at runtime. The LLM is not involved in
 {
   "summary": {
     "total_trades": 12,
-    "matched": 10,
-    "discrepancies": 3
+    "exempt": 2,
+    "matched": 8,
+    "discrepancies": 2
   },
   "discrepancies": [
     {
@@ -126,7 +127,10 @@ This script is fixed — it never changes at runtime. The LLM is not involved in
       "reasons": ["quantity_exceeded", "outside_window"]
     }
   ],
-  "clean_trades": [ ... ]
+  "clean_trades": [ ... ],
+  "exempt_trades": [
+    { "ticker": "SPY", "direction": "buy", "quantity": 50, "trade_date": "2026-06-15", "exempt_reason": "diversified_index" }
+  ]
 }
 ```
 
@@ -135,6 +139,23 @@ This script is fixed — it never changes at runtime. The LLM is not involved in
 - Traded quantity ≤ approved quantity is **clean** (partial fills are allowed)
 - Traded quantity > approved quantity is a **discrepancy**
 - Trade date must fall within `[approval_date, expiry_date]` inclusive
+
+### Index fund exemption
+Trades in diversified index instruments are **skipped entirely** — no pre-clearance required and no discrepancy raised. A trade is exempt if **both** conditions hold:
+
+1. The instrument has **more than 20 constituents**
+2. **No single constituent exceeds 20% of the portfolio weight**
+
+**How it works in the script:**
+- The comparison script accepts an optional `index_reference.json` file (uploaded via `register_compliance_file` with role `"index_reference"`) containing a list of known exempt instruments:
+  ```json
+  [
+    { "ticker": "SPY", "isin": "US78462F1030", "constituents": 503, "max_weight_pct": 7.1 },
+    { "ticker": "QQQ", "isin": "US46090E1038", "constituents": 101, "max_weight_pct": 8.9 }
+  ]
+  ```
+- If no reference file is provided, the script falls back to checking the ticker against a hardcoded list of well-known broad-market ETFs (e.g. SPY, IVV, VTI, QQQ, EFA) that are known to meet both thresholds.
+- Exempt trades are recorded in a separate `exempt_trades` list in the output JSON and noted in the report's third sheet (**Exempt Trades**) for audit purposes — they are not silently dropped.
 
 ---
 
@@ -147,9 +168,10 @@ This script is fixed — it never changes at runtime. The LLM is not involved in
 - Plain-English description of each discrepancy (e.g., "MSFT buy of 200 shares on 2026-06-18 exceeded approved quantity of 100 and fell outside the approval window which expired 2026-06-17")
 
 ### Downloadable report (`compliance_report.xlsx`)
-Two sheets:
+Three sheets:
 - **Discrepancies** — one row per discrepancy with columns: Ticker, Direction, Traded Qty, Approved Qty, Trade Date, Approval Date, Expiry Date, Reason(s)
 - **Clean Trades** — one row per matched clean trade for reference
+- **Exempt Trades** — one row per index-exempted trade for audit trail
 
 ---
 
