@@ -11,6 +11,10 @@ from src.sandbox import get_sandbox_session
 from src.tools.weather import get_weather as _get_weather
 from src.tools.calculator import calculate as _calculate
 from src.tools.search import web_search as _web_search
+from src.tools.compliance import (
+    register_compliance_file as _register_compliance_file,
+    run_compliance_check as _run_compliance_check,
+)
 
 
 @function_tool
@@ -31,15 +35,48 @@ async def web_search(query: str) -> str:
     return await _web_search(query)
 
 
+@function_tool
+async def register_compliance_file(filename: str, role: str) -> str:
+    """
+    Register an uploaded file for compliance checking.
+    Call this once per uploaded file before running the compliance check.
+    filename: the exact name of the uploaded file.
+    role: 'broker_statement', 'preclearance', or 'index_reference'.
+    """
+    return await _register_compliance_file(filename, role)
+
+
+@function_tool
+async def run_compliance_check() -> str:
+    """
+    Run the compliance check once both broker_statement and preclearance files are registered.
+    Returns a JSON summary of discrepancies, clean trades, and exempt trades.
+    Also attaches a downloadable Excel report.
+    """
+    return await _run_compliance_check()
+
+
 AGENT = SandboxAgent(
     name="AI Assistant",
     model="gpt-4o-mini",
     instructions=(
         "You are a helpful assistant with shell access to a secure e2b sandbox. "
         "Use exec_command to run Python scripts or shell commands for code execution, data analysis, or calculations. "
-        "You also have get_weather, calculate, and web_search tools."
+        "You also have get_weather, calculate, and web_search tools.\n\n"
+        "COMPLIANCE CHECKING:\n"
+        "When the user uploads broker statements or pre-clearance files for compliance review:\n"
+        "1. Call register_compliance_file(filename, role) for each uploaded file. "
+        "   Role must be 'broker_statement', 'preclearance', or 'index_reference'.\n"
+        "2. Once both 'broker_statement' and 'preclearance' are registered, call run_compliance_check().\n"
+        "3. Parse the returned JSON and narrate a clear plain-English summary:\n"
+        "   - State total trades reviewed, how many are clean, how many are exempt (index funds), "
+        "     and how many have discrepancies.\n"
+        "   - For each discrepancy, explain it in plain English: what was traded, what was approved, "
+        "     and exactly what rule was violated.\n"
+        "4. If a file arrives in one message and the other arrives later, acknowledge receipt and wait.\n"
+        "5. Diversified index ETFs (e.g. SPY, QQQ, VTI) are automatically exempt — no pre-clearance needed."
     ),
-    tools=[get_weather, calculate, web_search],
+    tools=[get_weather, calculate, web_search, register_compliance_file, run_compliance_check],
     capabilities=[Shell()],
 )
 
